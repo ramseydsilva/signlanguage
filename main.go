@@ -3,80 +3,138 @@ package main
 import (
 	"image"
 	"image/color"
-	_ "image/jpeg" // Register JPEG format
-	"image/png"
-	"math"
+	"image/jpeg"
+	// Register JPEG format
 	// Register PNG  format
 	"log"
 	"os"
+
+	"github.com/bradfitz/iter"
+	"github.com/nfnt/resize"
 )
 
-// Converted implements image.Image, so you can
-// pretend that it is the converted image.
-type Converted struct {
-	Img image.Image
-	Mod color.Model
+var white = color.RGBA{255, 255, 255, 0}
+var black = color.RGBA{0, 0, 0, 0}
+var tolerance = uint8(20)
+
+type colorMap [100][100]color.Color
+
+func isBlack(col color.RGBA) bool {
+	return col.R < 10 && col.G < 10 && col.B < 10
 }
 
-// We return the new color model...
-func (c *Converted) ColorModel() color.Model {
-	return c.Mod
+func isWhite(col color.RGBA) bool {
+	return col.R > 200 && col.G > 200 && col.B > 200
 }
 
-// ... but the original bounds
-func (c *Converted) Bounds() image.Rectangle {
-	return c.Img.Bounds()
-}
-
-// At forwards the call to the original image and
-// then asks the color model to convert it.
-func (c *Converted) At(x, y int) color.Color {
-	return c.Mod.Convert(c.Img.At(x, y))
-}
-
-func main() {
-	if len(os.Args) != 3 {
-		log.Fatalln("Needs two arguments")
+func (m *colorMap) clearNoise() *colorMap {
+	for x := range iter.N(100) {
+		for y := range iter.N(100) {
+			m[x][y] = white
+		}
 	}
-	infile, err := os.Open(os.Args[1])
+	return m
+}
+
+func getColorMap(i image.Image) *colorMap {
+	bounds := i.Bounds()
+	w, h := bounds.Max.X, bounds.Max.Y
+	cMap := &colorMap{}
+	for x := 0; x < w; x++ {
+		for y := 0; y < h; y++ {
+			cMap[x][y] = i.At(x, y)
+		}
+	}
+	return cMap
+}
+
+func getImage(s string) image.Image {
+	infile, err := os.Open(s)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	defer infile.Close()
 
-	img, _, err := image.Decode(infile)
+	img, err := jpeg.Decode(infile)
 	if err != nil {
 		log.Fatalln(err)
 	}
+	return img
+}
 
-	// Since Converted implements image, this is now a grayscale image
-	//gr := &Converted{img, color.GrayModel}
-	// Or do something like this to convert it into a black and
-	// white image.
-	// bw := []color.Color{color.Black,color.White}
-	// gr := &Converted{img, color.Palette(bw)}
-
-	// Create a new grayscale image
-	bounds := img.Bounds()
-	w, h := bounds.Max.X, bounds.Max.Y
-	gray := image.NewGray(bounds)
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			oldColor := img.At(x, y)
-			if math.Mod(float64(x), float64(100)) == 0 {
-				for i := 0; i < 100; i++ {
-					gray.Set(x+i, y, oldColor)
-					gray.Set(x, y+i, oldColor)
-				}
-			}
-		}
-	}
-
-	outfile, err := os.Create(os.Args[2])
+func writeImage(i image.Image, filename string) *os.File {
+	outfile, err := os.Create(filename)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	defer outfile.Close()
+	jpeg.Encode(outfile, i, nil)
+	return outfile
+}
 
-	png.Encode(outfile, gray)
+func isSimilar(diff1 color.RGBA, diff2 color.RGBA) bool {
+	return diff1.R-diff2.R < tolerance && diff1.G-diff2.G < tolerance && diff1.B-diff2.B < tolerance
+}
+
+func getDiffMap(map1 *colorMap, map2 *colorMap) *colorMap {
+	for x := 0; x < 100; x++ {
+		for y := 0; y < 100; y++ {
+			diff1 := color.RGBAModel.Convert(map1[x][y]).(color.RGBA)
+			diff2 := color.RGBAModel.Convert(map2[x][y]).(color.RGBA)
+
+			if isBlack(diff1) || !isSimilar(diff1, diff2) {
+				map2[x][y] = black
+			}
+		}
+	}
+	return map2
+}
+
+func getBlackPixelMap(imgMap *colorMap, oriMap *colorMap) *colorMap {
+	for x := range iter.N(100) {
+		for y := range iter.N(100) {
+			c := color.RGBAModel.Convert(imgMap[x][y]).(color.RGBA)
+			if isBlack(c) {
+				oriMap[x][y] = black
+			}
+		}
+	}
+	return oriMap
+}
+
+func resizeImage(img image.Image, width int, height int) image.Image {
+	return resize.Resize(uint(width), uint(height), img, resize.Lanczos3)
+}
+
+func getImageFromMap(imgMap *colorMap) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, 99, 99))
+	for x := range iter.N(100) {
+		for y := range iter.N(100) {
+			img.Set(x, y, imgMap[x][y])
+		}
+	}
+	return img
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		log.Fatalln("Needs min 2 arguments")
+	}
+
+	prevMap := &colorMap{}
+	map1 := &colorMap{}
+	for x := 1; x < len(os.Args)-1; x++ {
+		if x == 1 {
+			img1 := resizeImage(getImage(os.Args[x]), 100, 100)
+			map1 = getColorMap(img1)
+		} else {
+			map1 = getBlackPixelMap(getColorMap(resizeImage(resizeImage(getImageFromMap(prevMap), 10, 10), 100, 100)), map1)
+		}
+		img2 := resizeImage(getImage(os.Args[x+1]), 100, 100)
+		map2 := getColorMap(img2)
+		prevMap = getDiffMap(map1, map2)
+	}
+	diffImage := getImageFromMap(getBlackPixelMap(getColorMap(resizeImage(resizeImage(getImageFromMap(prevMap), 10, 10), 100, 100)), map1))
+	writeImage(diffImage, "images/results.jpg")
+
 }
