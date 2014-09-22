@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"strconv"
 	// Register JPEG format
 	// Register PNG  format
 	"log"
@@ -16,6 +17,8 @@ import (
 var white = color.RGBA{255, 255, 255, 0}
 var black = color.RGBA{0, 0, 0, 0}
 var tolerance = uint8(20)
+var toResize = 10
+var size = 100
 
 type colorMap [100][100]color.Color
 
@@ -24,12 +27,12 @@ func isBlack(col color.RGBA) bool {
 }
 
 func isWhite(col color.RGBA) bool {
-	return col.R > 200 && col.G > 200 && col.B > 200
+	return col.R > 100 && col.G > 100 && col.B > 100
 }
 
 func (m *colorMap) clearNoise() *colorMap {
-	for x := range iter.N(100) {
-		for y := range iter.N(100) {
+	for x := range iter.N(size) {
+		for y := range iter.N(size) {
 			m[x][y] = white
 		}
 	}
@@ -77,8 +80,8 @@ func isSimilar(diff1 color.RGBA, diff2 color.RGBA) bool {
 }
 
 func getDiffMap(map1 *colorMap, map2 *colorMap) *colorMap {
-	for x := 0; x < 100; x++ {
-		for y := 0; y < 100; y++ {
+	for x := 0; x < size; x++ {
+		for y := 0; y < size; y++ {
 			diff1 := color.RGBAModel.Convert(map1[x][y]).(color.RGBA)
 			diff2 := color.RGBAModel.Convert(map2[x][y]).(color.RGBA)
 
@@ -91,8 +94,8 @@ func getDiffMap(map1 *colorMap, map2 *colorMap) *colorMap {
 }
 
 func getBlackPixelMap(imgMap *colorMap, oriMap *colorMap) *colorMap {
-	for x := range iter.N(100) {
-		for y := range iter.N(100) {
+	for x := range iter.N(size) {
+		for y := range iter.N(size) {
 			c := color.RGBAModel.Convert(imgMap[x][y]).(color.RGBA)
 			if isBlack(c) {
 				oriMap[x][y] = black
@@ -107,34 +110,40 @@ func resizeImage(img image.Image, width int, height int) image.Image {
 }
 
 func getImageFromMap(imgMap *colorMap) image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, 99, 99))
-	for x := range iter.N(100) {
-		for y := range iter.N(100) {
+	img := image.NewRGBA(image.Rect(0, 0, size-1, size-1))
+	for x := range iter.N(size) {
+		for y := range iter.N(size) {
 			img.Set(x, y, imgMap[x][y])
 		}
 	}
 	return img
 }
 
+func getBP(m *colorMap, prev *colorMap) *colorMap {
+	return getBlackPixelMap(getColorMap(resizeImage(resizeImage(getImageFromMap(m), toResize, toResize), size, size)), prev)
+}
+
 func main() {
-	if len(os.Args) < 3 {
-		log.Fatalln("Needs min 2 arguments")
+	if len(os.Args) < 4 {
+		log.Fatalln("Needs min 3 arguments")
 	}
 
 	prevMap := &colorMap{}
 	map1 := &colorMap{}
-	for x := 1; x < len(os.Args)-1; x++ {
-		if x == 1 {
-			img1 := resizeImage(getImage(os.Args[x]), 100, 100)
+	t, _ := strconv.Atoi(os.Args[1])
+	tolerance = uint8(t)
+	for x := 2; x < len(os.Args)-1; x++ {
+		if x == 2 {
+			img1 := resizeImage(getImage(os.Args[x]), size, size)
 			map1 = getColorMap(img1)
 		} else {
-			map1 = getBlackPixelMap(getColorMap(resizeImage(resizeImage(getImageFromMap(prevMap), 10, 10), 100, 100)), map1)
+			map1 = getBP(prevMap, map1)
 		}
-		img2 := resizeImage(getImage(os.Args[x+1]), 100, 100)
+		img2 := resizeImage(getImage(os.Args[x+1]), size, size)
 		map2 := getColorMap(img2)
 		prevMap = getDiffMap(map1, map2)
 	}
-	diffImage := getImageFromMap(getBlackPixelMap(getColorMap(resizeImage(resizeImage(getImageFromMap(prevMap), 10, 10), 100, 100)), map1))
+	diffImage := getImageFromMap(getBP(prevMap, map1))
 	writeImage(diffImage, "images/results.jpg")
 
 }
